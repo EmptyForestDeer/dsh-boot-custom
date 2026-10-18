@@ -15,7 +15,7 @@ const here = dirname(fileURLToPath(import.meta.url))
 const root = resolve(here, '..')
 const screen = readFileSync(join(root, 'src', 'boot-screen.js'), 'utf8')
 
-function makeEnv({ enterMode = 'tail', theme = 'nebula', fadeMs = 2000, clips = [], voice, sound } = {}) {
+function makeEnv({ enterMode = 'tail', theme = 'nebula', fadeMs = 2000, clips = [], voice, sound, voiceOutcome = 'ok' } = {}) {
   const spoken = []
   const timers = []
   let now = 0
@@ -226,6 +226,31 @@ function makeEnv({ enterMode = 'tail', theme = 'nebula', fadeMs = 2000, clips = 
   // the welcome line is spoken exactly once, and when it must stay silent.
   globalObj.SpeechSynthesisUtterance = function Utterance(text) { this.text = text; spoken.push(String(text)) }
   globalObj.speechSynthesis = { speak() {}, getVoices() { return [] } }
+  // Audio stub models the three real outcomes for the human-voice clip:
+  //   'ok'      play() resolves — the human voice won, TTS must not fire;
+  //   'gated'   play() rejects NotAllowedError — autoplay policy said no, so
+  //             the screen stays silent (like the sibling's unclicked clip);
+  //   'missing' play() rejects + an error event fires — no usable asset, so
+  //             the screen falls back to the system TTS voice.
+  globalObj.playedSrc = []
+  globalObj.Audio = function Audio() {
+    const self = this
+    self.volume = 1
+    self.preload = ''
+    self._listeners = {}
+    self.addEventListener = (type, fn) => { (self._listeners[type] = self._listeners[type] || []).push(fn) }
+    Object.defineProperty(self, 'src', { set(v) { self._src = v; globalObj.playedSrc.push(v) } })
+    self.play = function () {
+      if (voiceOutcome === 'ok') return Promise.resolve()
+      if (voiceOutcome === 'gated') {
+        const err = new Error('not allowed'); err.name = 'NotAllowedError'
+        return Promise.reject(err)
+      }
+      const err = new Error('no source'); err.name = 'NotSupportedError'
+      Promise.resolve().then(() => { (self._listeners.error || []).forEach(fn => fn({ target: self })) })
+      return Promise.reject(err)
+    }
+  }
 
   const run = () => {
     const fn = new Function('window', 'document', 'globalThis', 'sessionStorage', 'fetch', 'Path2D', screen)
@@ -233,6 +258,11 @@ function makeEnv({ enterMode = 'tail', theme = 'nebula', fadeMs = 2000, clips = 
   }
 
   return { globalObj, document, timers, tick, run, now: () => now, spoken }
+}
+
+/** Let queued promise callbacks (the play() outcome) settle. */
+async function settle() {
+  for (let i = 0; i < 8; i += 1) await Promise.resolve()
 }
 
 function rows(...items) { return items }
@@ -401,38 +431,64 @@ export async function verifyTiming() {
     })
   }
 
-  // 8. The welcome voice: spoken exactly once across the run (the stub's
-  //    Date.now is the real clock, so the time-based bubble trigger is not
-  //    reachable here — the voice must still fire via the clipDone path),
-  //    silent when the voice switch is off, and silent under global mute.
+  // 8. The welcome voice. The primary path is the shipped human-voice clip
+  //    (an Audio element); the system TTS voice is only the fallback when the
+  //    asset is missing. Three outcomes, plus the two silence switches.
   {
-    const env = makeEnv({ enterMode: 'tail', theme: 'nebula' })
+    // 8a. Human clip plays: TTS must NOT fire (the timbre must be the human
+    //     one, not the robot), and the clip URL is the plugin's audio route.
+    const env = makeEnv({ enterMode: 'tail', theme: 'nebula', voiceOutcome: 'ok' })
     env.run()
-    for (let i = 0; i < 70; i += 1) await env.tick(120) // past NEBULA_MS + hand-off
+    for (let i = 0; i < 70; i += 1) await env.tick(120)
+    await settle()
+    results.push({
+      ok: env.spoken.length === 0
+        && env.globalObj.playedSrc.length === 1
+        && env.globalObj.playedSrc[0] === '/plugins/dsh-boot-custom/audio/welcome.m4a',
+      name: 'human voice clip plays and TTS stays quiet',
+      detail: `tts=${env.spoken.length} src=${env.globalObj.playedSrc[0] || '-'}`,
+    })
+  }
+  {
+    // 8b. Autoplay policy rejects the clip (cold, un-clicked boot): stay
+    //     silent, exactly like the sibling's clip before its sound unlock.
+    const env = makeEnv({ enterMode: 'tail', theme: 'nebula', voiceOutcome: 'gated' })
+    env.run()
+    for (let i = 0; i < 70; i += 1) await env.tick(120)
+    await settle()
+    results.push({
+      ok: env.spoken.length === 0 && env.globalObj.playedSrc.length === 1,
+      name: 'autoplay-gated voice stays silent (no robot fallback)',
+      detail: `tts=${env.spoken.length}`,
+    })
+  }
+  {
+    // 8c. The asset is missing/undecodable: fall back to the system voice.
+    const env = makeEnv({ enterMode: 'tail', theme: 'nebula', voiceOutcome: 'missing' })
+    env.run()
+    for (let i = 0; i < 70; i += 1) await env.tick(120)
+    await settle()
     results.push({
       ok: env.spoken.length === 1 && env.spoken[0] === '欢迎回来',
-      name: 'welcome voice speaks exactly once',
+      name: 'missing voice asset falls back to TTS once',
       detail: `spoken=[${env.spoken.join('|')}]`,
     })
   }
   {
+    // 8d. Both switches keep the run silent.
     const env = makeEnv({ enterMode: 'tail', theme: 'nebula', voice: false })
     env.run()
     for (let i = 0; i < 70; i += 1) await env.tick(120)
+    await settle()
+    const voiceOff = env.spoken.length === 0 && env.globalObj.playedSrc.length === 0
+    const env2 = makeEnv({ enterMode: 'tail', theme: 'nebula', sound: false })
+    env2.run()
+    for (let i = 0; i < 70; i += 1) await env2.tick(120)
+    await settle()
     results.push({
-      ok: env.spoken.length === 0,
-      name: 'voice off stays silent',
-      detail: `spoken=${env.spoken.length}`,
-    })
-  }
-  {
-    const env = makeEnv({ enterMode: 'tail', theme: 'nebula', sound: false })
-    env.run()
-    for (let i = 0; i < 70; i += 1) await env.tick(120)
-    results.push({
-      ok: env.spoken.length === 0,
-      name: 'global mute silences the voice too',
-      detail: `spoken=${env.spoken.length}`,
+      ok: voiceOff && env2.spoken.length === 0 && env2.globalObj.playedSrc.length === 0,
+      name: 'voice off / global mute play nothing',
+      detail: `voiceOff=${voiceOff} muted=${env2.globalObj.playedSrc.length}`,
     })
   }
 

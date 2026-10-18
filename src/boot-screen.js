@@ -54,11 +54,16 @@
   var SOUND_HINT_REFUSED = '浏览器拒绝了声音，点一下重试'
   var CLICK_TO_ENTER = cfg.clickToEnter === true
   var SHOW_HINT = cfg.showHint !== false
-  // 片尾语音：与「欢迎回来」气泡同一时刻，用系统语音轻声说一句。
-  // speechSynthesis is a renderer API, not a media element: Chromium's
-  // autoplay policy does not gate it, so it can speak on a cold boot with no
-  // user gesture. It still honours the global mute (SOUND_ON off = silence).
+  // 片尾语音：与「欢迎回来」气泡同一时刻轻声说一句。
+  // 主路是素材音频 `<base>/audio/welcome.m4a` —— 从 dsh-boot-animation 的
+  // 1.mp4 音轨里提取的那句真人声（ASR 复核），音色与短片一致。素材缺失、
+  // 或被 Chromium 自动播放策略拒绝时，兜底走 speechSynthesis（渲染器 API，
+  // 不受自动播放策略限制）。两条路都失败就安静地只出气泡文字。
+  // 跟随全局静音：SOUND_ON=false 时两条路都不出声。
   var VOICE_ON = cfg.voice !== false
+  // base is the plugin's route root with no trailing slash; guard anyway so a
+  // trailing slash never turns this into a protocol-relative (wrong-host) URL.
+  var VOICE_SRC = String(cfg.base || '').replace(/\/+$/, '') + '/audio/welcome.m4a'
   var WELCOME_TEXT = '欢迎回来'
   // A video clip shorter than this cannot carry the dissolve.
   var TAIL_MIN_MS = FADE_MS * 2
@@ -1275,26 +1280,59 @@
     if (voiceSpoken) return
     voiceSpoken = true
     if (!VOICE_ON || !SOUND_ON) return
-    try {
-      var synth = globalThis.speechSynthesis
-      if (!synth || typeof synth.speak !== 'function'
-        || typeof globalThis.SpeechSynthesisUtterance !== 'function') return
-      var utter = new globalThis.SpeechSynthesisUtterance(WELCOME_TEXT)
-      utter.lang = 'zh-CN'
-      // Prefer an explicit Chinese voice when the engine exposes one; the
-      // list can arrive asynchronously, so this is best-effort only.
-      var voices = typeof synth.getVoices === 'function' ? synth.getVoices() : []
-      for (var i = 0; i < voices.length; i += 1) {
-        var lang = String(voices[i].lang || '').toLowerCase().replace('_', '-')
-        if (lang.indexOf('zh') === 0) { utter.voice = voices[i]; break }
+    var speakTts = function () {
+      try {
+        var synth = globalThis.speechSynthesis
+        if (!synth || typeof synth.speak !== 'function'
+          || typeof globalThis.SpeechSynthesisUtterance !== 'function') return
+        var utter = new globalThis.SpeechSynthesisUtterance(WELCOME_TEXT)
+        utter.lang = 'zh-CN'
+        var voices = typeof synth.getVoices === 'function' ? synth.getVoices() : []
+        for (var i = 0; i < voices.length; i += 1) {
+          var lang = String(voices[i].lang || '').toLowerCase().replace('_', '-')
+          if (lang.indexOf('zh') === 0) { utter.voice = voices[i]; break }
+        }
+        utter.rate = 0.95
+        utter.pitch = 1.05
+        utter.volume = 0.9
+        synth.speak(utter)
+      } catch (error) {
+        // A missing or failing voice engine must never trap the boot.
       }
-      utter.rate = 0.95
-      utter.pitch = 1.05
-      utter.volume = 0.9
-      synth.speak(utter)
-    } catch (error) {
-      // A missing or failing voice engine must never trap the boot.
     }
+    // The voice is the human 欢迎回来 lifted from the sibling animation's own
+    // audio track, so the timbre matches the short films. It is a media
+    // element, so Chromium's autoplay policy can reject it on a cold, un-
+    // clicked boot — and that is correct: the sibling is silent until the
+    // sound is unlocked, so we stay silent too rather than fall back to the
+    // robotic system voice. TTS is used ONLY when the human asset is missing
+    // or undecodable (a 404 / decode error), so the feature degrades to a
+    // spoken line instead of nothing.
+    try {
+      if (typeof globalThis.Audio === 'function') {
+        var el = new globalThis.Audio()
+        el.preload = 'auto'
+        el.volume = 1
+        // A missing asset can surface twice (an `error` event AND a rejected
+        // play()); speak the fallback at most once.
+        var fellBack = false
+        var assetGone = function () { if (fellBack) return; fellBack = true; speakTts() }
+        el.addEventListener('error', assetGone, { once: true })
+        el.src = VOICE_SRC
+        var played = el.play()
+        if (played && typeof played.then === 'function') {
+          played.then(function () { /* human voice won */ }, function (reason) {
+            // NotAllowedError = autoplay-gated (stay silent, like the sibling).
+            // Anything else (e.g. no usable source) = fall back to TTS.
+            if (!reason || reason.name !== 'NotAllowedError') assetGone()
+          })
+        }
+        return
+      }
+    } catch (error) {
+      /* no Audio() at all: fall through to TTS */
+    }
+    speakTts()
   }
 
   function welcomeProgress(t) {

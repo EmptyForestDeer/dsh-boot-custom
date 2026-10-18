@@ -133,6 +133,22 @@ export async function verifyRoutes() {
       const optBad = await request(server, '/plugins/dsh-boot-custom/optimize?name=..%2F..%2Fpackage.json', { method: 'POST' })
       results.push({ ok: optBad.status === 400, name: 'optimize rejects traversal name', detail: 'status ' + optBad.status })
 
+      // The welcome-audio route serves the shipped human-voice clip with an
+      // audio MIME type (the screen's Audio element needs it; a wrong type or
+      // a 404 would silently push every boot onto the TTS fallback).
+      const audio = await request(server, '/plugins/dsh-boot-custom/audio/welcome.m4a')
+      results.push({
+        ok: audio.status === 200 && audio.headers['content-type'] === 'audio/mp4' && audio.body.length > 1000,
+        name: 'welcome audio serves as audio/mp4',
+        detail: `status=${audio.status} type=${audio.headers['content-type']} bytes=${audio.body.length}`,
+      })
+      const audioRange = await request(server, '/plugins/dsh-boot-custom/audio/welcome.m4a', { headers: { range: 'bytes=0-99' } })
+      results.push({
+        ok: audioRange.status === 206 && audioRange.body.length === 100,
+        name: 'welcome audio honours ranges',
+        detail: `status=${audioRange.status} bytes=${audioRange.body.length}`,
+      })
+
       // parseRange unit checks: the same logic entry.js uses. Inlined here so
       // the check is self-contained; a change to entry.js's parseRange would
       // need this copy updated too (the verify suite guards the behavior, not

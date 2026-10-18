@@ -91,7 +91,8 @@ const DEFAULT_SETTINGS = {
   clickToEnter: false,
   /** Whether the bottom hint line is drawn. */
   showHint: true,
-  /** Whether the screen says 欢迎回来 aloud at the end (system TTS voice). */
+  /** Whether the screen says 欢迎回来 aloud at the end (the shipped human
+   * voice, lifted from the sibling animation's own audio track). */
   voice: true,
 }
 
@@ -171,11 +172,19 @@ export const inject = ['webServer']
 /** The clip directory, resolved from this module rather than the process cwd. */
 const assetDir = fileURLToPath(new URL('./assets/videos', import.meta.url))
 
+/** The spoken-line directory (the 欢迎回来 clip that ships with the plugin). */
+const audioDir = fileURLToPath(new URL('./assets/audio', import.meta.url))
+
+/** The one spoken clip the end-of-animation voice plays, if present. */
+const WELCOME_AUDIO = join(audioDir, 'welcome.m4a')
+
 /** MIME type served for one clip. */
 function contentType(file) {
   switch (extname(file).toLowerCase()) {
     case '.webm': return 'video/webm'
     case '.mov': return 'video/quicktime'
+    case '.m4a': return 'audio/mp4'
+    case '.mp3': return 'audio/mpeg'
     default: return 'video/mp4'
   }
 }
@@ -505,6 +514,32 @@ export function apply(ctx, config) {
       })
     },
   }), 'boot-custom: optimize route')
+
+  // The one spoken line the end card says, served from a fixed path so there is
+  // no traversal surface: the screen asks for `<base>/audio/welcome.m4a` and
+  // gets exactly the shipped file, or a 404 that makes the screen fall back to
+  // the system TTS voice. Range is honoured so the audio element can seek.
+  ctx.effect(() => server.register({
+    kind: 'exact',
+    path: `${ROUTE}/audio/welcome.m4a`,
+    handler: (req, res) => {
+      void (async () => {
+        try {
+          await serveClip(WELCOME_AUDIO, req, res)
+        } catch (error) {
+          if (error?.code === 'ENOENT') {
+            sendJson(res, 404, { error: 'not found' })
+            return
+          }
+          throw error
+        }
+      })().catch((error) => {
+        ctx.logger?.error?.('boot-custom: audio route failed', error)
+        if (!res.headersSent) sendJson(res, 500, { error: 'internal' })
+        else res.end()
+      })
+    },
+  }), 'boot-custom: welcome audio route')
 
   // `ctx.on` already returns a disposer the fiber tracks, so it is registered
   // directly rather than wrapped in an effect — matching the other subscribers
