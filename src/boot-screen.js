@@ -54,6 +54,12 @@
   var SOUND_HINT_REFUSED = '浏览器拒绝了声音，点一下重试'
   var CLICK_TO_ENTER = cfg.clickToEnter === true
   var SHOW_HINT = cfg.showHint !== false
+  // 片尾语音：与「欢迎回来」气泡同一时刻，用系统语音轻声说一句。
+  // speechSynthesis is a renderer API, not a media element: Chromium's
+  // autoplay policy does not gate it, so it can speak on a cold boot with no
+  // user gesture. It still honours the global mute (SOUND_ON off = silence).
+  var VOICE_ON = cfg.voice !== false
+  var WELCOME_TEXT = '欢迎回来'
   // A video clip shorter than this cannot carry the dissolve.
   var TAIL_MIN_MS = FADE_MS * 2
   // A clip whose length is unknown never fires `ended`; this bounds that.
@@ -403,6 +409,7 @@
     }
     if (options.theme === 'nebula' || options.theme === 'video') THEME = options.theme
     SOUND_ON = options.sound !== false
+    VOICE_ON = options.voice !== false
     CLICK_TO_ENTER = options.clickToEnter === true
     SHOW_HINT = options.showHint !== false
     computeHints()
@@ -442,6 +449,7 @@
     cardOn = false
     // The "欢迎回来" line is per-run state too: a preview speaks it again.
     welcomeStart = null
+    voiceSpoken = false
     namespace.bootedAt = Date.now()
 
     mount()
@@ -1260,6 +1268,35 @@
    */
   var welcomeStart = null
   var WELCOME_LEAD_MS = 2500
+  var voiceSpoken = false
+
+  /** One quiet spoken 欢迎回来 at the moment the bubble appears. */
+  function speakWelcome() {
+    if (voiceSpoken) return
+    voiceSpoken = true
+    if (!VOICE_ON || !SOUND_ON) return
+    try {
+      var synth = globalThis.speechSynthesis
+      if (!synth || typeof synth.speak !== 'function'
+        || typeof globalThis.SpeechSynthesisUtterance !== 'function') return
+      var utter = new globalThis.SpeechSynthesisUtterance(WELCOME_TEXT)
+      utter.lang = 'zh-CN'
+      // Prefer an explicit Chinese voice when the engine exposes one; the
+      // list can arrive asynchronously, so this is best-effort only.
+      var voices = typeof synth.getVoices === 'function' ? synth.getVoices() : []
+      for (var i = 0; i < voices.length; i += 1) {
+        var lang = String(voices[i].lang || '').toLowerCase().replace('_', '-')
+        if (lang.indexOf('zh') === 0) { utter.voice = voices[i]; break }
+      }
+      utter.rate = 0.95
+      utter.pitch = 1.05
+      utter.volume = 0.9
+      synth.speak(utter)
+    } catch (error) {
+      // A missing or failing voice engine must never trap the boot.
+    }
+  }
+
   function welcomeProgress(t) {
     if (welcomeStart === null) {
       var nearEnd = false
@@ -1272,7 +1309,10 @@
           nearEnd = (video.duration - video.currentTime) * 1000 <= WELCOME_LEAD_MS
         }
       }
-      if (nearEnd || clipDone) welcomeStart = t
+      if (nearEnd || clipDone) {
+        welcomeStart = t
+        speakWelcome()
+      }
     }
     if (welcomeStart === null) return 0
     return Math.min((t - welcomeStart) / 600, 1)

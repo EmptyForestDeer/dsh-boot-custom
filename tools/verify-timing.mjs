@@ -15,7 +15,8 @@ const here = dirname(fileURLToPath(import.meta.url))
 const root = resolve(here, '..')
 const screen = readFileSync(join(root, 'src', 'boot-screen.js'), 'utf8')
 
-function makeEnv({ enterMode = 'tail', theme = 'nebula', fadeMs = 2000, clips = [] } = {}) {
+function makeEnv({ enterMode = 'tail', theme = 'nebula', fadeMs = 2000, clips = [], voice, sound } = {}) {
+  const spoken = []
   const timers = []
   let now = 0
   let rafQueue = []
@@ -193,7 +194,8 @@ function makeEnv({ enterMode = 'tail', theme = 'nebula', fadeMs = 2000, clips = 
       theme,
       fadeMs,
       enterMode,
-      sound: true,
+      sound: sound !== false,
+      voice: voice !== false,
       clickToEnter: false,
       showHint: true,
     },
@@ -220,13 +222,17 @@ function makeEnv({ enterMode = 'tail', theme = 'nebula', fadeMs = 2000, clips = 
   // Path2D is a browser API; the stub only needs it to exist so the brand and
   // end-card logo sweeps can run.
   globalObj.Path2D = function Path2D(d) { this.d = d }
+  // speechSynthesis stub: records every utterance text so the tests can assert
+  // the welcome line is spoken exactly once, and when it must stay silent.
+  globalObj.SpeechSynthesisUtterance = function Utterance(text) { this.text = text; spoken.push(String(text)) }
+  globalObj.speechSynthesis = { speak() {}, getVoices() { return [] } }
 
   const run = () => {
     const fn = new Function('window', 'document', 'globalThis', 'sessionStorage', 'fetch', 'Path2D', screen)
     fn.call(globalObj, globalObj, document, globalObj, globalObj.sessionStorage, globalObj.fetch, globalObj.Path2D)
   }
 
-  return { globalObj, document, timers, tick, run, now: () => now }
+  return { globalObj, document, timers, tick, run, now: () => now, spoken }
 }
 
 function rows(...items) { return items }
@@ -392,6 +398,41 @@ export async function verifyTiming() {
       ok: hidden === null && state === 'leaving',
       name: 'unplayable clip falls back to the nebula',
       detail: `data-video=${hidden} state=${state}`,
+    })
+  }
+
+  // 8. The welcome voice: spoken exactly once across the run (the stub's
+  //    Date.now is the real clock, so the time-based bubble trigger is not
+  //    reachable here — the voice must still fire via the clipDone path),
+  //    silent when the voice switch is off, and silent under global mute.
+  {
+    const env = makeEnv({ enterMode: 'tail', theme: 'nebula' })
+    env.run()
+    for (let i = 0; i < 70; i += 1) await env.tick(120) // past NEBULA_MS + hand-off
+    results.push({
+      ok: env.spoken.length === 1 && env.spoken[0] === '欢迎回来',
+      name: 'welcome voice speaks exactly once',
+      detail: `spoken=[${env.spoken.join('|')}]`,
+    })
+  }
+  {
+    const env = makeEnv({ enterMode: 'tail', theme: 'nebula', voice: false })
+    env.run()
+    for (let i = 0; i < 70; i += 1) await env.tick(120)
+    results.push({
+      ok: env.spoken.length === 0,
+      name: 'voice off stays silent',
+      detail: `spoken=${env.spoken.length}`,
+    })
+  }
+  {
+    const env = makeEnv({ enterMode: 'tail', theme: 'nebula', sound: false })
+    env.run()
+    for (let i = 0; i < 70; i += 1) await env.tick(120)
+    results.push({
+      ok: env.spoken.length === 0,
+      name: 'global mute silences the voice too',
+      detail: `spoken=${env.spoken.length}`,
     })
   }
 

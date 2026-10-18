@@ -71,6 +71,9 @@ const BEHAVIOUR = [
   ['sound', '播放影片声音',
     '影片尝试带声音播放，右下角有一个开声音的按钮',
     '已彻底静音：不会尝试开声音，声音按钮也不再出现'],
+  ['voice', '片尾语音「欢迎回来」',
+    '动画结束时用系统语音轻声说一句「欢迎回来」（跟随上面的声音开关）',
+    '不出声，「欢迎回来」仍然以气泡文字出现'],
   ['clickToEnter', '点鼠标直接进入',
     '按一下画面就直接进入界面，不再用第一下开声音',
     '按一下先开声音，再按一下才进入（默认）'],
@@ -257,9 +260,10 @@ function BootAnimationCard(props) {
   const enterMode = typeof stored.enterMode === 'string' ? stored.enterMode : 'tail'
   const disabled = Array.isArray(stored.disabledClips) ? stored.disabledClips : []
   const sound = stored.sound !== false
+  const voice = stored.voice !== false
   const clickToEnter = stored.clickToEnter === true
   const showHint = stored.showHint !== false
-  const behaviour = { sound, clickToEnter, showHint }
+  const behaviour = { sound, voice, clickToEnter, showHint }
 
   // The pool, and each clip's real length. Gated on `open` so a collapsed card
   // costs nothing.
@@ -427,6 +431,7 @@ function BootAnimationCard(props) {
         fadeMs,
         enterMode,
         sound,
+        voice,
         clickToEnter,
         showHint,
         onDone: () => setPreviewing(null),

@@ -91,6 +91,8 @@ const DEFAULT_SETTINGS = {
   clickToEnter: false,
   /** Whether the bottom hint line is drawn. */
   showHint: true,
+  /** Whether the screen says 欢迎回来 aloud at the end (system TTS voice). */
+  voice: true,
 }
 
 /** The accepted `enterMode` values, in the order the browser card presents them. */
@@ -157,6 +159,7 @@ export const Config = z.object({
   sound: live(z.boolean().default(DEFAULT_SETTINGS.sound)),
   clickToEnter: live(z.boolean().default(DEFAULT_SETTINGS.clickToEnter)),
   showHint: live(z.boolean().default(DEFAULT_SETTINGS.showHint)),
+  voice: live(z.boolean().default(DEFAULT_SETTINGS.voice)),
 })
 
 /** Package name the loader mounts this row as. */
@@ -372,6 +375,7 @@ export function apply(ctx, config) {
       const sound = readField(config, 'sound')
       const clickToEnter = readField(config, 'clickToEnter')
       const showHint = readField(config, 'showHint')
+      const voice = readField(config, 'voice')
       return {
         enabled: typeof enabled === 'boolean' ? enabled : DEFAULT_SETTINGS.enabled,
         theme: THEMES.includes(theme) ? theme : DEFAULT_SETTINGS.theme,
@@ -381,6 +385,7 @@ export function apply(ctx, config) {
         sound: typeof sound === 'boolean' ? sound : DEFAULT_SETTINGS.sound,
         clickToEnter: typeof clickToEnter === 'boolean' ? clickToEnter : DEFAULT_SETTINGS.clickToEnter,
         showHint: typeof showHint === 'boolean' ? showHint : DEFAULT_SETTINGS.showHint,
+        voice: typeof voice === 'boolean' ? voice : DEFAULT_SETTINGS.voice,
       }
     } catch (error) {
       ctx.logger?.warn?.('boot-custom: settings unreadable, using defaults', error)
@@ -526,6 +531,7 @@ export function apply(ctx, config) {
         sound: settings.sound,
         clickToEnter: settings.clickToEnter,
         showHint: settings.showHint,
+        voice: settings.voice,
       })}`,
     })
     table.push({ kind: 'script', placement: 'head', text: bootScreenSource() })
