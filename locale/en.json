@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Nebula boot animation",
+    "description": "Plays a nebula animation across the window before the DSH UI appears, dissolving into the app; theme, fade length, entry mode and clip pool are adjustable in Settings → Plugins."
+  }
+}

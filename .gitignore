@@ -1,0 +1,10 @@
+# Dependencies installed by the package manager
+node_modules/
+
+# Scratch dirs used by the on-demand faststart optimizer
+assets/videos/.faststart-work/
+assets/videos/originals/
+
+# OS noise
+Thumbs.db
+.DS_Store

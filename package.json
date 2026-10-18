@@ -1,0 +1,55 @@
+{
+  "name": "dsh-boot-custom",
+  "version": "0.1.0",
+  "description": "星云启动动画：CSS 星云开屏、进度可见、点击/Esc 放行、失败有兜底。不改 DSH 本体源码。",
+  "license": "MIT",
+  "icon": "icon.svg",
+  "keywords": [
+    "dsh",
+    "deepseek",
+    "plugin",
+    "boot",
+    "animation",
+    "nebula",
+    "启动动画"
+  ],
+  "type": "module",
+  "main": "entry.js",
+  "exports": {
+    ".": "./entry.js",
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./locale/*": "./locale/*",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "assets",
+    "lib",
+    "src",
+    "locale",
+    "cordis.patch.yml",
+    "entry.js",
+    "icon.svg",
+    "package.json",
+    "README.md"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.4"
+  },
+  "dsh": {
+    "engines": {
+      "dsh": ">=0.2.0-rc.2"
+    },
+    "client": {
+      "platform": "web"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

@@ -1,0 +1,13 @@
+# dsh-boot-custom bundle layer: mounted by `dsh plugin add` / the official
+# 设置 → 插件 → 添加插件 page, so a profile gets this row without manual
+# cordis.patch.yml edits.
+#
+# The id below is part of the contract: it is the settings namespace the Host
+# half serves and the browser card reads. Renaming it silently orphans the card.
+#
+# One exit: the whole screen fades out over a second. Split and glitch exits
+# were deliberately not built; only the single dissolve.
+
+- insert:
+    - id: boot-custom
+      name: dsh-boot-custom
