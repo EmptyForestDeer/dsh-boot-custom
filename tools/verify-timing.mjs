@@ -15,7 +15,7 @@ const here = dirname(fileURLToPath(import.meta.url))
 const root = resolve(here, '..')
 const screen = readFileSync(join(root, 'src', 'boot-screen.js'), 'utf8')
 
-function makeEnv({ enterMode = 'tail', theme = 'nebula', fadeMs = 2000, clips = [], voice, sound, voiceOutcome = 'ok' } = {}) {
+function makeEnv({ enterMode = 'tail', theme = 'nebula', fadeMs = 2000, clips = [], voice, sound, voiceOutcome = 'ok', pickMode = 'random' } = {}) {
   const spoken = []
   const timers = []
   let now = 0
@@ -187,10 +187,18 @@ function makeEnv({ enterMode = 'tail', theme = 'nebula', fadeMs = 2000, clips = 
         setItem: (k, v) => { map.set(k, String(v)) },
       }
     })(),
+    localStorage: (() => {
+      const map = new Map()
+      return {
+        getItem: (k) => (map.has(k) ? map.get(k) : null),
+        setItem: (k, v) => { map.set(k, String(v)) },
+      }
+    })(),
     __DSH_BOOT_CUSTOM_CFG__: {
       base: '/plugins/dsh-boot-custom',
       manifest: '/plugins/dsh-boot-custom/clips.json',
       holdMs: 15000,
+      pickMode,
       theme,
       fadeMs,
       enterMode,
@@ -253,8 +261,8 @@ function makeEnv({ enterMode = 'tail', theme = 'nebula', fadeMs = 2000, clips = 
   }
 
   const run = () => {
-    const fn = new Function('window', 'document', 'globalThis', 'sessionStorage', 'fetch', 'Path2D', screen)
-    fn.call(globalObj, globalObj, document, globalObj, globalObj.sessionStorage, globalObj.fetch, globalObj.Path2D)
+    const fn = new Function('window', 'document', 'globalThis', 'sessionStorage', 'localStorage', 'fetch', 'Path2D', screen)
+    fn.call(globalObj, globalObj, document, globalObj, globalObj.sessionStorage, globalObj.localStorage, globalObj.fetch, globalObj.Path2D)
   }
 
   return { globalObj, document, timers, tick, run, now: () => now, spoken }
@@ -489,6 +497,31 @@ export async function verifyTiming() {
       ok: voiceOff && env2.spoken.length === 0 && env2.globalObj.playedSrc.length === 0,
       name: 'voice off / global mute play nothing',
       detail: `voiceOff=${voiceOff} muted=${env2.globalObj.playedSrc.length}`,
+    })
+  }
+
+  // 9. Pick mode 'rotate' walks the pool in order and persists the cursor, so
+  //    every window that boots shows the NEXT clip rather than all picking the
+  //    same random one. Pre-seeding the cursor at clip 0 must land on clip 1.
+  {
+    const env = makeEnv({
+      enterMode: 'tail', theme: 'video', pickMode: 'rotate',
+      clips: [
+        { name: 'a.mp4', src: '/clip/a.mp4', enabled: true },
+        { name: 'b.mp4', src: '/clip/b.mp4', enabled: true },
+        { name: 'c.mp4', src: '/clip/c.mp4', enabled: true },
+      ],
+    })
+    env.globalObj.localStorage.setItem('dsh-boot-custom:cursor', '0')
+    env.run()
+    await env.tick(60)
+    const root = env.document.body.children[0]
+    const video = root.children.filter(c => c.tagName === 'VIDEO').pop()
+    const cursor = env.globalObj.localStorage.getItem('dsh-boot-custom:cursor')
+    results.push({
+      ok: String(video.src).includes('/clip/b.mp4') && cursor === '1',
+      name: 'rotate picks the next clip and advances the cursor',
+      detail: `src=${video.src} cursor=${cursor}`,
     })
   }
 

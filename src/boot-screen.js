@@ -105,8 +105,33 @@
     return out
   }
 
+  // How the next clip is chosen: 'random' (never the last one shown in this
+  // window) or 'rotate' (strict round-robin over the pool). The cursor lives
+  // in localStorage, not sessionStorage, so several windows booting at once
+  // still walk the pool one clip apart instead of all picking the same one.
+  var PICK_MODE = cfg.pickMode === 'rotate' ? 'rotate' : 'random'
+
   function pickClip(clips) {
     var recentKey = 'dsh-boot-custom:recent'
+    var cursorKey = 'dsh-boot-custom:cursor'
+    if (PICK_MODE === 'rotate') {
+      var last = -1
+      try {
+        last = parseInt(localStorage.getItem(cursorKey) || '-1', 10)
+      } catch (error) {
+        last = -1
+      }
+      if (!Number.isFinite(last) || last < 0 || last >= clips.length) {
+        last = Math.floor(Math.random() * clips.length)
+      }
+      var next = (last + 1) % clips.length
+      try {
+        localStorage.setItem(cursorKey, String(next))
+      } catch (error) {
+        /* private mode: rotation restarts from a random slot next time */
+      }
+      return clips[next]
+    }
     var recent = []
     try {
       recent = JSON.parse(sessionStorage.getItem(recentKey) || '[]')

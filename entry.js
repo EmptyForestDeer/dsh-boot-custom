@@ -38,8 +38,8 @@
 // in cordis.patch.yml moves the namespace and silently orphans the browser
 // card, whose key is the same string.
 
-import { readdir, stat, open } from 'node:fs/promises'
-import { createReadStream, readFileSync } from 'node:fs'
+import { readdir, stat, open, mkdir, rename, rm } from 'node:fs/promises'
+import { createReadStream, readFileSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { basename, extname, join, resolve, sep } from 'node:path'
 import { optimizeInPlace } from './src/remux.js'
@@ -91,6 +91,8 @@ const DEFAULT_SETTINGS = {
   clickToEnter: false,
   /** Whether the bottom hint line is drawn. */
   showHint: true,
+  /** How the next clip is chosen from the pool: random, or round-robin. */
+  pickMode: 'random',
   /** Whether the screen says 欢迎回来 aloud at the end (the shipped human
    * voice, lifted from the sibling animation's own audio track). */
   voice: true,
@@ -101,6 +103,9 @@ const ENTER_MODES = ['tail', 'end', 'click']
 
 /** The accepted `theme` values. */
 const THEMES = ['nebula', 'video']
+
+/** The accepted `pickMode` values: random pick, or strict round-robin. */
+const PICK_MODES = ['random', 'rotate']
 
 /**
  * Whether the resolved schemastery can mark a Config field live-editable.
@@ -161,6 +166,7 @@ export const Config = z.object({
   clickToEnter: live(z.boolean().default(DEFAULT_SETTINGS.clickToEnter)),
   showHint: live(z.boolean().default(DEFAULT_SETTINGS.showHint)),
   voice: live(z.boolean().default(DEFAULT_SETTINGS.voice)),
+  pickMode: live(z.union([...PICK_MODES]).default(DEFAULT_SETTINGS.pickMode)),
 })
 
 /** Package name the loader mounts this row as. */
@@ -385,6 +391,7 @@ export function apply(ctx, config) {
       const clickToEnter = readField(config, 'clickToEnter')
       const showHint = readField(config, 'showHint')
       const voice = readField(config, 'voice')
+      const pickMode = readField(config, 'pickMode')
       return {
         enabled: typeof enabled === 'boolean' ? enabled : DEFAULT_SETTINGS.enabled,
         theme: THEMES.includes(theme) ? theme : DEFAULT_SETTINGS.theme,
@@ -395,6 +402,7 @@ export function apply(ctx, config) {
         clickToEnter: typeof clickToEnter === 'boolean' ? clickToEnter : DEFAULT_SETTINGS.clickToEnter,
         showHint: typeof showHint === 'boolean' ? showHint : DEFAULT_SETTINGS.showHint,
         voice: typeof voice === 'boolean' ? voice : DEFAULT_SETTINGS.voice,
+        pickMode: PICK_MODES.includes(pickMode) ? pickMode : DEFAULT_SETTINGS.pickMode,
       }
     } catch (error) {
       ctx.logger?.warn?.('boot-custom: settings unreadable, using defaults', error)
@@ -541,6 +549,94 @@ export function apply(ctx, config) {
     },
   }), 'boot-custom: welcome audio route')
 
+  // Upload one clip from the settings card, so a user never has to open the
+  // folder themselves: the browser sends the file body, the Host writes it
+  // into the pool under a sanitized, collision-free name. Guards: extension
+  // whitelist, a hard size cap (streamed, so an oversized upload is aborted
+  // mid-body rather than buffered), and no overwrite — an existing name gets
+  // ` (2)`, ` (3)`… appended instead of replacing someone's clip.
+  const UPLOAD_LIMIT = 200 * 1024 * 1024
+
+  /** Read a request body to a temp path, refusing anything over the cap. */
+  async function readBodyToFile(req, tempPath) {
+    const declared = Number(req.headers['content-length'] ?? 0)
+    if (Number.isFinite(declared) && declared > UPLOAD_LIMIT) {
+      const error = new Error('文件超过 200MB 上限。')
+      error.code = 'E_TOO_BIG'
+      throw error
+    }
+    const handle = await open(tempPath, 'w')
+    let written = 0
+    try {
+      for await (const chunk of req) {
+        written += chunk.length
+        if (written > UPLOAD_LIMIT) {
+          const error = new Error('文件超过 200MB 上限。')
+          error.code = 'E_TOO_BIG'
+          throw error
+        }
+        await handle.writeFile(chunk)
+      }
+    } finally {
+      await handle.close()
+    }
+    return written
+  }
+
+  /** Pick a name in the pool that does not collide with an existing file. */
+  async function freeName(desired) {
+    if (!existsSync(join(assetDir, desired))) return desired
+    const ext = extname(desired)
+    const stem = desired.slice(0, desired.length - ext.length)
+    for (let i = 2; i < 100; i += 1) {
+      const candidate = `${stem} (${String(i)})${ext}`
+      if (!existsSync(join(assetDir, candidate))) return candidate
+    }
+    return `${stem} (${String(Date.now())})${ext}`
+  }
+
+  ctx.effect(() => server.register({
+    kind: 'exact',
+    path: `${ROUTE}/upload`,
+    handler: (req, res) => {
+      void (async () => {
+        if (req.method !== 'POST') {
+          sendJson(res, 405, { ok: false, error: '这个地址只接受 POST。' })
+          return
+        }
+        const url = new URL(req.url ?? '/', 'http://localhost')
+        const requested = url.searchParams.get('name') ?? ''
+        const name = basename(requested)
+        const ext = extname(name).toLowerCase()
+        if (name === '' || name !== requested || !VIDEO_EXTENSIONS.has(ext)
+          || /[\\/]/.test(name) || name.startsWith('.')) {
+          sendJson(res, 400, { ok: false, error: '文件名不合法（只收 mp4 / webm / m4v / mov）。' })
+          return
+        }
+        await mkdir(assetDir, { recursive: true })
+        const final = await freeName(name)
+        const tempPath = join(assetDir, `.upload-${String(Date.now())}.part`)
+        try {
+          await readBodyToFile(req, tempPath)
+          await rename(tempPath, join(assetDir, final))
+        } catch (error) {
+          await rm(tempPath, { force: true }).catch(() => {})
+          throw error
+        }
+        const info = await stat(join(assetDir, final))
+        sendJson(res, 200, { ok: true, name: final, bytes: info.size })
+      })().catch((error) => {
+        if (error?.code === 'E_TOO_BIG') {
+          sendJson(res, 413, { ok: false, error: error.message })
+          return
+        }
+        ctx.logger?.error?.('boot-custom: upload route failed', error)
+        if (!res.headersSent) sendJson(res, 500, { ok: false, error: 'internal' })
+        else res.end()
+      })
+    },
+  }), 'boot-custom: upload route')
+
   // `ctx.on` already returns a disposer the fiber tracks, so it is registered
   // directly rather than wrapped in an effect — matching the other subscribers
   // of this event (ui-theme, client-modules, client-connection).
@@ -567,6 +663,7 @@ export function apply(ctx, config) {
         clickToEnter: settings.clickToEnter,
         showHint: settings.showHint,
         voice: settings.voice,
+        pickMode: settings.pickMode,
       })}`,
     })
     table.push({ kind: 'script', placement: 'head', text: bootScreenSource() })

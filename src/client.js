@@ -48,6 +48,15 @@ const MANIFEST = '/plugins/dsh-boot-custom/clips.json'
 /** Where one clip's index table is moved to the front of its file. */
 const OPTIMIZE = '/plugins/dsh-boot-custom/optimize'
 
+/** Where the browser hands one chosen file to the Host to drop into the pool. */
+const UPLOAD = '/plugins/dsh-boot-custom/upload'
+
+/** The two ways the next clip is chosen, with the line that explains each. */
+const PICK_MODES = [
+  ['random', '随机', '每次开屏从勾选的素材里随机抽一条，尽量不连续重样'],
+  ['rotate', '轮播', '按顺序一条接一条放，所有窗口共用同一个进度，绝不撞车'],
+]
+
 /** Offered dissolve lengths, in milliseconds. */
 const FADE_CHOICES = [1000, 1500, 2000, 3000, 4000]
 
@@ -61,7 +70,7 @@ const ENTER_MODES = [
 /** The two themes. */
 const THEMES = [
   ['nebula', '星云（内置）', '纯 CSS 星云动画，无需任何素材文件'],
-  ['video', '视频素材池', '从素材池随机播放一段短片，池空时回退到星云'],
+  ['video', '视频素材池', '从素材池挑一段短片播放（随机或轮播），池空时回退到星云'],
 ]
 
 /**
@@ -239,6 +248,12 @@ function BootAnimationCard(props) {
   const [busy, setBusy] = React.useState(false)
   const [fixing, setFixing] = React.useState({})
   const [previewing, setPreviewing] = React.useState(null)
+  // Upload state: null when idle, else { name, percent, index, total } for the
+  // file in flight. Files queue one at a time so progress stays readable.
+  const [uploading, setUploading] = React.useState(null)
+  const uploadQueue = React.useRef([])
+  const draining = React.useRef(false)
+  const fileInput = React.useRef(null)
 
   ensureStyle()
 
@@ -263,19 +278,22 @@ function BootAnimationCard(props) {
   const voice = stored.voice !== false
   const clickToEnter = stored.clickToEnter === true
   const showHint = stored.showHint !== false
+  const pickMode = stored.pickMode === 'rotate' ? 'rotate' : 'random'
   const behaviour = { sound, voice, clickToEnter, showHint }
 
   // The pool, and each clip's real length. Gated on `open` so a collapsed card
-  // costs nothing.
+  // costs nothing. `poolTick` re-runs the fetch after an upload lands.
+  const [poolTick, setPoolTick] = React.useState(0)
+  const reloadPool = React.useCallback(() => setPoolTick((tick) => tick + 1), [])
   React.useEffect(() => {
-    if (!open || pool !== null) return undefined
+    if (!open) return undefined
     let live = true
     fetch(MANIFEST, { cache: 'no-store' })
       .then((response) => (response.ok ? response.json() : { clips: [] }))
       .then((payload) => { if (live) setPool(Array.isArray(payload.clips) ? payload.clips : []) })
       .catch((error) => { if (live) setFailure('读取素材池失败：' + String(error)) })
     return () => { live = false }
-  }, [open, pool])
+  }, [open, poolTick])
 
   React.useEffect(() => {
     if (!open || pool === null) return undefined
@@ -410,6 +428,71 @@ function BootAnimationCard(props) {
         setFixing((current) => Object.assign({}, current, { [name]: 'error' }))
         setFailure('优化 ' + name + ' 失败：' + String(error))
       })
+  }
+
+  /**
+   * Stream one file into the pool with real progress (fetch cannot report
+   * upload progress; XHR can). The queue drains one file at a time.
+   */
+  const uploadOne = (file, index, total) => new Promise((done) => {
+    const request = new XMLHttpRequest()
+    request.open('POST', UPLOAD + '?name=' + encodeURIComponent(file.name))
+    request.responseType = 'text'
+    request.upload.onprogress = (event) => {
+      if (event.lengthComputable) {
+        setUploading({ name: file.name, percent: Math.round(event.loaded / event.total * 100), index, total })
+      }
+    }
+    const finish = (message) => {
+      if (message) setFailure(message)
+      done()
+    }
+    request.onload = () => {
+      let answer = null
+      try { answer = JSON.parse(request.responseText) } catch (error) { /* non-JSON body */ }
+      if (request.status === 200 && answer && answer.ok === true) {
+        setUploading({ name: answer.name, percent: 100, index, total, saved: true })
+        finish(null)
+      } else {
+        const why = answer && answer.error ? String(answer.error) : 'HTTP ' + String(request.status)
+        finish('上传 ' + file.name + ' 失败：' + why)
+      }
+    }
+    request.onerror = () => finish('上传 ' + file.name + ' 失败：网络中断')
+    request.ontimeout = () => finish('上传 ' + file.name + ' 失败：超时')
+    request.timeout = 10 * 60 * 1000
+    request.send(file)
+  })
+
+  const drainQueue = async () => {
+    if (draining.current) return // a drain is already running
+    draining.current = true
+    try {
+      for (;;) {
+        const files = uploadQueue.current.splice(0, uploadQueue.current.length)
+        if (files.length === 0) break
+        for (let i = 0; i < files.length; i += 1) {
+          await uploadOne(files[i], i + 1, files.length)
+        }
+      }
+    } finally {
+      draining.current = false
+      setUploading(null)
+      reloadPool()
+    }
+  }
+
+  const onFilesPicked = (event) => {
+    const picked = Array.from(event.target.files || [])
+    event.target.value = '' // let the same file be picked again later
+    if (picked.length === 0) return
+    const ok = picked.filter((file) => /\.(mp4|webm|m4v|mov)$/i.test(file.name))
+    for (const file of picked.filter((entry) => !ok.includes(entry))) {
+      setFailure('「' + file.name + '」不是 mp4 / webm / m4v / mov，已跳过。')
+    }
+    if (ok.length === 0) return
+    uploadQueue.current = uploadQueue.current.concat(ok)
+    void drainQueue()
   }
 
   /**
@@ -552,12 +635,12 @@ function BootAnimationCard(props) {
     const clipNodes = []
     if (theme !== 'video') {
       clipNodes.push(React.createElement('div', { className: 'dshbc-msg', key: 'nebula-note' },
-        '当前是内置星云主题，无需素材。切到「视频素材池」后，把 mp4 放进 assets/videos/ 再刷新这一页。'))
+        '当前是内置星云主题，无需素材。切到「视频素材池」后，点下面的「上传素材」或把 mp4 放进 assets/videos/ 再刷新这一页。'))
     } else if (pool === null) {
       clipNodes.push(React.createElement('div', { className: 'dshbc-msg', key: 'loading' }, '正在读取…'))
     } else if (pool.length === 0) {
       clipNodes.push(React.createElement('div', { className: 'dshbc-msg', key: 'empty' },
-        '素材池是空的。把 mp4 放进 assets/videos/ 再刷新这一页；池空时开屏自动回退到星云动画。'))
+        '素材池是空的。点「上传素材」选几条短片，或把 mp4 放进 assets/videos/ 再刷新这一页；池空时开屏自动回退到星云动画。'))
     } else {
       for (const clip of pool) {
         const known = lengths[clip.name] || {}
@@ -617,9 +700,44 @@ function BootAnimationCard(props) {
       }
     }
 
+    const uploadControls = [React.createElement('input', {
+      key: 'picker',
+      type: 'file',
+      accept: 'video/mp4,video/webm,video/quicktime,.mp4,.webm,.m4v,.mov',
+      multiple: true,
+      ref: fileInput,
+      style: { display: 'none' },
+      onChange: onFilesPicked,
+    }), React.createElement('button', {
+      key: 'upload',
+      type: 'button',
+      className: 'dshbc-opt dshbc-mini',
+      disabled: uploading !== null,
+      title: '选几条 mp4 / webm 短片传进素材池（单条最大 200MB），传完立即可用，不用碰文件夹。',
+      onClick: () => { if (fileInput.current !== null) fileInput.current.click() },
+    }, uploading === null ? '上传素材' : '上传中…')]
+    if (uploading !== null) {
+      uploadControls.push(React.createElement('span', { className: 'dshbc-meta', key: 'progress' },
+        uploading.index + '/' + uploading.total + ' ' + uploading.name + ' '
+        + (uploading.saved ? '已入库' : uploading.percent + '%')))
+    }
+
     sections.push(React.createElement('div', { className: 'dshbc-sec', key: 'pool' },
       React.createElement('div', { className: 'dshbc-h' }, '素材池'),
-      React.createElement('div', { className: 'dshbc-p' }, '勾选的素材参与随机轮播；取消勾选的只留在文件夹里，不再被抽中。'),
+      React.createElement('div', { className: 'dshbc-row', style: { marginBottom: '8px' } }, uploadControls),
+      React.createElement('div', { className: 'dshbc-h', style: { fontSize: '12.5px' } }, '多条素材的选取方式'),
+      React.createElement('div', { className: 'dshbc-row', style: { marginBottom: '6px' } },
+        PICK_MODES.map(entry => React.createElement('button', {
+          key: entry[0],
+          type: 'button',
+          className: 'dshbc-opt',
+          'data-on': entry[0] === pickMode ? 1 : 0,
+          disabled: busy,
+          onClick: () => write('pickMode', entry[0]),
+        }, entry[1]))),
+      React.createElement('div', { className: 'dshbc-p' },
+        (PICK_MODES.filter(entry => entry[0] === pickMode)[0] || ['', '', ''])[2]
+        + ' 勾选的素材参与选取；取消勾选的只留在文件夹里，不再被选中。'),
       clipNodes))
 
     if (failure !== null) {

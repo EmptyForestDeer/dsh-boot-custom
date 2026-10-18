@@ -85,10 +85,10 @@ export async function verifyConfig() {
     return uid === undefined ? null : refs[uid] || null
   }
   const failures = []
-  for (const key of ['enabled', 'theme', 'fadeMs', 'enterMode', 'disabledClips', 'sound', 'clickToEnter', 'showHint', 'voice']) {
+  for (const key of ['enabled', 'theme', 'fadeMs', 'enterMode', 'disabledClips', 'sound', 'clickToEnter', 'showHint', 'voice', 'pickMode']) {
     if (!(key in dict)) failures.push('missing field ' + key)
   }
-  for (const key of ['enabled', 'theme', 'fadeMs', 'enterMode', 'disabledClips', 'sound', 'clickToEnter', 'showHint', 'voice']) {
+  for (const key of ['enabled', 'theme', 'fadeMs', 'enterMode', 'disabledClips', 'sound', 'clickToEnter', 'showHint', 'voice', 'pickMode']) {
     const p = fieldSchema(key)
     if (!p) continue
     if (p.meta && p.meta.volatile !== true) failures.push(key + ' not volatile')

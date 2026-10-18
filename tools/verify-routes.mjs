@@ -149,6 +149,21 @@ export async function verifyRoutes() {
         detail: `status=${audioRange.status} bytes=${audioRange.body.length}`,
       })
 
+      // Upload route guards. The success path is deliberately NOT exercised
+      // against the real pool (a verify run must never leave files in the
+      // user's assets/videos); these check the gates that decide a request
+      // before any byte is written.
+      const upGet = await request(server, '/plugins/dsh-boot-custom/upload?name=one.mp4')
+      results.push({ ok: upGet.status === 405, name: 'upload refuses GET', detail: 'status ' + upGet.status })
+      const upBadName = await request(server, '/plugins/dsh-boot-custom/upload?name=..%2Fevil.mp4', { method: 'POST' })
+      results.push({ ok: upBadName.status === 400, name: 'upload rejects traversal name', detail: 'status ' + upBadName.status })
+      const upBadExt = await request(server, '/plugins/dsh-boot-custom/upload?name=payload.exe', { method: 'POST' })
+      results.push({ ok: upBadExt.status === 400, name: 'upload rejects non-video extension', detail: 'status ' + upBadExt.status })
+      const upBig = await request(server, '/plugins/dsh-boot-custom/upload?name=big.mp4', {
+        method: 'POST', headers: { 'content-length': String(201 * 1024 * 1024) },
+      })
+      results.push({ ok: upBig.status === 413, name: 'upload rejects over-cap body', detail: 'status ' + upBig.status })
+
       // parseRange unit checks: the same logic entry.js uses. Inlined here so
       // the check is self-contained; a change to entry.js's parseRange would
       // need this copy updated too (the verify suite guards the behavior, not
